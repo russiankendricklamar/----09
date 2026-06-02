@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type InstrumentType = 'SPOT' | 'SWAP' | 'FORWARD' | 'REPO' | 'IRS';
+export type InstrumentType = 'SPOT' | 'SWAP' | 'FORWARD' | 'REPO' | 'IRS' | 'FRA' | 'FUTURES';
 
 export interface Deal {
   id: string;
@@ -79,4 +79,4 @@ export interface YieldCurve {
   extrapolation: string;
 }
 
-export type ActiveTab = 'overview' | 'fx_derivatives' | 'repo_instruments' | 'rate_derivatives' | 'deals' | 'market_data' | 'directories' | 'configuration';
+export type ActiveTab = 'overview' | 'fx_derivatives' | 'repo_instruments' | 'rate_derivatives' | 'deals' | 'market_data' | 'directories';

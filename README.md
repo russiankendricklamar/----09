@@ -8,13 +8,12 @@ This contains everything you need to run your app locally.
 
 View your app in AI Studio: https://ai.studio/apps/4b455667-575c-4ac7-8132-95a31ab532d8
 
-## Run Locally
+## Deployment
 
-**Prerequisites:**  Node.js
+### Deploy to Vercel
 
+1. Install Vercel CLI: `npm i -g vercel`
+2. Run `vercel` in the project root.
+3. Follow the prompts to deploy.
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+The project is already configured with `vercel.json` for Vite/React SPA routing.

@@ -3,11 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState } from 'react';
-import { motion } from 'motion/react';
+import { useState, useRef } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { 
   ShieldCheck, AlertCircle, Check, Download, Info, Calculator, 
-  RefreshCw, TrendingUp, History, ClipboardCheck, ArrowUpRight
+  RefreshCw, TrendingUp, History, ClipboardCheck, ArrowUpRight,
+  Play, Upload, FileText, Edit2, Search, Eye, Sparkles
 } from 'lucide-react';
 import { Deal, MarketQuote, YieldCurve } from '../types';
 
@@ -15,9 +16,30 @@ interface RepoInstrumentsViewProps {
   deals: Deal[];
   quotes: MarketQuote[];
   onRefresh: () => void;
+  onInspectDeal: (id: string) => void;
 }
 
-export default function RepoInstrumentsView({ deals, quotes, onRefresh }: RepoInstrumentsViewProps) {
+interface AuditLogEntry {
+  id: string;
+  timestamp: string;
+  field: string;
+  oldValue: string;
+  newValue: string;
+  user: string;
+}
+
+export default function RepoInstrumentsView({ deals: initialDeals, quotes, onRefresh, onInspectDeal }: RepoInstrumentsViewProps) {
+  const [appMode, setAppMode] = useState<'AUTO' | 'SEMI_AUTO' | 'CALCULATOR'>('AUTO');
+  
+  // --- STATE FOR SEMI-AUTO ---
+  const [activeDeals, setActiveDeals] = useState<any[]>(
+    initialDeals.filter(d => d.type === 'REPO').map(d => ({ ...d }))
+  );
+  const [auditLog, setAuditLog] = useState<AuditLogEntry[]>([]);
+  const [editingCell, setEditingCell] = useState<{ dealId: string; field: string; value: string } | null>(null);
+  const [fileUploaded, setFileUploaded] = useState(false);
+
+  // --- STATE FOR CALCULATOR ---
   const [selectedIsin, setSelectedIsin] = useState<string>('RU000A1038V1');
   const [inputClosePrice, setInputClosePrice] = useState<number>(98.50);
   const [inputLeg1Price, setInputLeg1Price] = useState<number>(93.20);
@@ -25,123 +47,83 @@ export default function RepoInstrumentsView({ deals, quotes, onRefresh }: RepoIn
   const [inputTermDays, setInputTermDays] = useState<number>(7);
   const [calcResult, setCalcResult] = useState<any | null>(null);
 
-  // Filter REPO deals from register
-  const repoDeals = deals.filter(d => d.type === 'REPO');
+  const dealsFileRef = useRef<HTMLInputElement>(null);
 
-  // Interactive calculations for REPO deals from mock database
-  const evaluatedRepoDeals = repoDeals.map(deal => {
-    // Simulated values for collateral close price
+  // Evaluate REPO deals
+  const evaluatedRepoDeals = activeDeals.map(deal => {
     let closePrice = 98.20;
     if (deal.isin === 'XS2345678901') closePrice = 100.50;
-    if (deal.isin === 'GB0002875804') closePrice = 102.10;
-
     const qty = deal.leg1Qty || 100000;
-    const price1 = deal.rate ? (deal.rate * 20) : 92.40; // Simulated repo unit price in % 
-    const isin = deal.isin || 'RU000A101234';
-    
-    // NKD calculation
+    const price1 = deal.rate ? (deal.rate * 20) : 92.40;
     const nkd1 = parseFloat((qty * 0.12).toFixed(2));
     const nkd2 = parseFloat((qty * 0.15).toFixed(2));
-
-    const sum1NoNkd = parseFloat((qty * (price1 / 100) * 1000).toFixed(2)); // Bond par is 1000
+    const sum1NoNkd = parseFloat((qty * (price1 / 100) * 1000).toFixed(2));
     const sum1WithNkd = sum1NoNkd + nkd1;
-
-    // Siren days / term days
-    const t = 30; // 30 days default
-    const repoRate = deal.rate || 4.20; // repo rate in %
+    const t = 30;
+    const repoRate = deal.rate || 4.20;
     const sum2NoNkd = parseFloat((sum1NoNkd * (1 + (repoRate / 100) * t / 360)).toFixed(2));
     const sum2WithNkd = sum2NoNkd + nkd2;
-
-    // Control sums checks
-    const control1Passed = Math.abs(deal.leg1Total || sum1WithNkd) > 0;
-    const control2Passed = true; // Simulated math consistency
-
-    // Actual collateral discount: (1 - Price_first / Price_close) * 100
     const calculatedDiscount = parseFloat(((1 - price1 / closePrice) * 100).toFixed(2));
-    const requiredNkcHaircut = 5.0; // 5% minimum
-    const discountDiscrepancyBps = (calculatedDiscount - requiredNkcHaircut) * 100;
-
-    // RUSFAR rate comparison
-    const rusfarBench = 15.02; // RUSFAR short-term rate on date
+    const rusfarBench = 15.02;
     const repoRateAnomalyPp = parseFloat((repoRate - rusfarBench).toFixed(2));
 
     return {
       dealId: deal.id,
-      isin,
+      isin: deal.isin || 'RU000A101234',
       counterparty: deal.counterparty,
       termDays: t,
       qty,
       price1,
       nkd1,
-      sum1NoNkd,
-      sum1WithNkd,
       nkd2,
-      sum2NoNkd,
+      sum1WithNkd,
       sum2WithNkd,
       repoRate,
-      closePrice,
       calculatedDiscount,
-      requiredNkcHaircut,
-      discountDiscrepancyBps,
       rusfarBench,
       repoRateAnomalyPp,
-      control1: control1Passed,
-      control2: control2Passed
     };
   });
 
   const handleExportCSV = () => {
     let csvContent = "data:text/csv;charset=utf-8,";
-    csvContent += "ID Сделки,ISIN,Контрагент,Срок (дн),Ставка РЕПО,Котировка Лег 1,Сумма Лег 1 (с НКД),Ресурс залога,MOEX цена закрытия,Дисконт по сделке %,Норма НКЦ %,Превышение дисконта (б.п.),RUSFAR бенчмарк\n";
-    
+    csvContent += "ID Сделки,ISIN,Контрагент,Срок (дн),Ставка РЕПО,Сумма Нога 1,Дисконт %,RUSFAR\n";
     evaluatedRepoDeals.forEach(r => {
-      csvContent += `${r.dealId},${r.isin},${r.counterparty},${r.termDays},${r.repoRate}%,${r.price1}%,${r.sum1WithNkd.toFixed(2)},Гос Облигации,${r.closePrice},${r.calculatedDiscount}%,${r.requiredNkcHaircut}%,${r.discountDiscrepancyBps.toFixed(0)},${r.rusfarBench}%\n`;
+      csvContent += `${r.dealId},${r.isin},${r.counterparty},${r.termDays},${r.repoRate}%,${r.sum1WithNkd.toFixed(2)},${r.calculatedDiscount}%,${r.rusfarBench}%\n`;
     });
-
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
-    link.setAttribute("download", "RU_REPO_Valuation_Report.csv");
+    link.setAttribute("download", "Analytica_REPO_Report.csv");
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
   };
 
+  const handleCellEditSubmit = (dealId: string, field: string, value: string) => {
+    const origValue = activeDeals.find(d => d.id === dealId)?.[field];
+    setActiveDeals(prev => prev.map(d => d.id === dealId ? { ...d, [field]: parseFloat(value) || value } : d));
+    setAuditLog(prev => [{
+      id: Math.random().toString(),
+      timestamp: new Date().toLocaleTimeString('ru-RU'),
+      field: `${dealId} -> ${field}`,
+      oldValue: String(origValue || ''),
+      newValue: String(value),
+      user: 'Пользователь'
+    }, ...prev]);
+    setEditingCell(null);
+  };
+
   const runRepoCalculator = () => {
-    // Compute Part 1 Sum
-    const parValue = 1000; // Face value is typically 1000 RUB
-    const tradeQty = 10000; // Tested nominal item count
-    const nkdValue1 = 12.50; // RUB per bond
-    const nkdValue2 = 14.80; // RUB per bond
-
+    const parValue = 1000;
+    const tradeQty = 10000;
     const sum1NoNkd = (tradeQty * (inputLeg1Price / 100) * parValue);
-    const sum1WithNkd = sum1NoNkd + (tradeQty * nkdValue1);
-
-    // Compute Part 2 Sum (T-days repo accrual)
+    const sum1WithNkd = sum1NoNkd + (tradeQty * 12.50);
     const accrualFactor = 1 + (inputRepoRate / 100) * inputTermDays / 360;
-    const sum2NoNkd = sum1NoNkd * accrualFactor;
-    const sum2WithNkd = sum2NoNkd + (tradeQty * nkdValue2);
-
-    // Actual discount
+    const sum2WithNkd = (sum1NoNkd * accrualFactor) + (tradeQty * 14.80);
     const actualDiscount = (1 - inputLeg1Price / inputClosePrice) * 100;
-    const nkcRequiredHaircut = 5.0; // NCC collateral margin limit
-    const deviation = actualDiscount - nkcRequiredHaircut;
-
-    // Short-term benchmark comparing
-    const rusfarBench = 15.15; // Benchmark
-
-    setCalcResult({
-      sum1NoNkd,
-      sum1WithNkd,
-      sum2NoNkd,
-      sum2WithNkd,
-      actualDiscount,
-      nkcRequiredHaircut,
-      deviation,
-      rusfarBench,
-      repoRatePp: inputRepoRate,
-      ppAnomaly: inputRepoRate - rusfarBench
-    });
+    const rusfarBench = 15.15;
+    setCalcResult({ sum1WithNkd, sum2WithNkd, actualDiscount, rusfarBench, repoRatePp: inputRepoRate });
   };
 
   return (
@@ -149,270 +131,226 @@ export default function RepoInstrumentsView({ deals, quotes, onRefresh }: RepoIn
       initial={{ opacity: 0, y: 15 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.25 }}
-      className="flex flex-col gap-6"
+      className="flex flex-col gap-5"
     >
-      {/* Header card */}
-      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 bg-surface-light rounded-lg border border-line-soft p-5 shadow-sm">
-        <div>
-          <h2 className="font-sans text-xl font-extrabold text-[#001026] tracking-tight">РЕПО • Контроль обеспечения и процентных ставок</h2>
-          <p className="font-sans text-xs text-on-surface-variant mt-1 leading-normal">
-            Аудит расчетов первой и второй ноги REPO, верификация дисконтов обеспечения по ценам закрытия МосБиржи Торговой Системы и бенчмаркинг по ставкам RUSFAR.
-          </p>
+      {/* Mode Switcher - FX Style */}
+      <div className="flex justify-end bg-surface-bright p-2 rounded-xl border border-line-soft shadow-sm">
+        <div className="flex bg-surface-container rounded-lg p-0.5 border border-line-soft items-center gap-1">
+          {[
+            { id: 'AUTO', icon: Play, label: 'Авто' },
+            { id: 'SEMI_AUTO', icon: Upload, label: 'Ручной' },
+            { id: 'CALCULATOR', icon: Calculator, label: 'Расчет' }
+          ].map(m => (
+            <button 
+              key={m.id}
+              onClick={() => setAppMode(m.id as any)}
+              className={`px-4 py-1.5 font-sans text-[11px] font-bold rounded-md cursor-pointer transition-all flex items-center gap-1.5 ${
+                appMode === m.id ? 'bg-primary text-on-primary shadow-sm' : 'text-on-surface-variant hover:text-on-surface'
+              }`}
+            >
+              <m.icon className="w-3.5 h-3.5" /> {m.label}
+            </button>
+          ))}
         </div>
-
-        <button 
-          onClick={handleExportCSV}
-          className="bg-primary hover:bg-primary-container text-on-primary rounded-lg font-bold py-2.5 px-4 text-xs flex items-center justify-center gap-2 cursor-pointer transition-all shadow-md self-start xl:self-center"
-        >
-          <Download className="w-4 h-4" /> Выгрузить РЕПО-ведомость (Excel)
-        </button>
       </div>
 
-      {/* Main REPO Deal Validation Grid */}
-      <div className="bg-surface-light rounded-lg border border-line-soft shadow-sm overflow-hidden flex flex-col">
-        <div className="px-5 py-3 border-b border-line-soft bg-surface-container-lowest flex justify-between items-center flex-wrap gap-2 text-xs font-bold text-primary">
-          <span className="flex items-center gap-1.5"><ClipboardCheck className="w-4 h-4 text-primary" /> Параметры и сверка контрольных сумм РЕПО-сделок</span>
-          <span className="font-sans text-[10px] text-on-surface-variant bg-surface-container px-2 py-0.5 rounded uppercase">Дисциплина Положения 511-П ЦБ РФ</span>
-        </div>
+      {appMode === 'AUTO' && (
+        <div className="flex flex-col gap-5 animate-fadeIn">
+          {/* KPI and registry table for REPO */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+             <div className="bg-white rounded-xl border border-line-soft p-4 shadow-sm flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-primary/5 flex items-center justify-center shrink-0">
+                   <ClipboardCheck className="w-5 h-5 text-primary opacity-70" />
+                </div>
+                <div>
+                   <div className="text-[10px] font-black uppercase text-on-surface-variant leading-none">Всего РЕПО</div>
+                   <div className="text-xl font-black text-on-surface mt-1">{evaluatedRepoDeals.length.toLocaleString('ru-RU')}</div>
+                </div>
+             </div>
+             <div className="bg-white rounded-xl border border-line-soft p-4 shadow-sm flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-primary/5 flex items-center justify-center shrink-0">
+                   <Percent className="w-5 h-5 text-primary opacity-70" />
+                </div>
+                <div>
+                   <div className="text-[10px] font-black uppercase text-on-surface-variant leading-none">Ср. ставка</div>
+                   <div className="text-xl font-black text-primary mt-1">14.12%</div>
+                </div>
+             </div>
+             <div className="bg-white rounded-xl border border-line-soft p-4 shadow-sm flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-primary/5 flex items-center justify-center shrink-0">
+                   <ShieldCheck className="w-5 h-5 text-primary opacity-70" />
+                </div>
+                <div>
+                   <div className="text-[10px] font-black uppercase text-on-surface-variant leading-none">Комплаенс</div>
+                   <div className="text-xl font-black text-pos mt-1">OK</div>
+                </div>
+             </div>
+          </div>
 
-        <div className="overflow-x-auto w-full">
-          <table className="w-full text-left border-collapse min-w-[1200px]">
-            <thead>
-              <tr className="bg-surface-container border-b border-line-soft text-[10px] font-extrabold text-on-surface-variant uppercase tracking-wider">
-                <th colSpan={5} className="py-2 px-4 border-r border-line text-left bg-surface-bright/20">Условия сделки РЕПО (Table 1.1)</th>
-                <th colSpan={3} className="py-2 px-4 border-r border-line text-left bg-[#ecf2fa]/20 text-secondary">Контроль Сумм НКД (К1 & К2)</th>
-                <th colSpan={4} className="py-2 px-3 text-left bg-pos/5 text-pos font-extrabold">Оценка дисконтов и RUSFAR (Table 1.2)</th>
-              </tr>
-              <tr className="bg-surface-container-low text-[10.5px] font-bold text-on-surface-variant border-b border-line-soft">
-                <th className="py-2.5 px-4 font-bold">Код сделки</th>
-                <th className="py-2.5 px-4 font-mono font-bold">ISIN залога</th>
-                <th className="py-2.5 px-4">Контрагент</th>
-                <th className="py-2.5 px-3 text-right">Ставка %</th>
-                <th className="py-2.5 px-3 text-center border-r border-line">T (дн.)</th>
-
-                {/* Leg check */}
-                <th className="py-2.5 px-3">Leg 1 Сумма / НКД</th>
-                <th className="py-2.5 px-3">Leg 2 Сумма / НКД</th>
-                <th className="py-2.5 px-4 text-center border-r border-line">Контроль K1/K2</th>
-
-                {/* Haircuts and Benchmarks */}
-                <th className="py-2.5 px-3">Факт. Дисконт %</th>
-                <th className="py-2.5 px-3">Биржа Close Цена</th>
-                <th className="py-2.5 px-3">Отыклонение НКЦ</th>
-                <th className="py-2.5 px-4 text-right">RUSFAR бенч. / Аном.</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-line-soft text-[11.5px] font-medium text-on-surface tabular-nums">
-              {evaluatedRepoDeals.map(res => {
-                const isOffMarket = Math.abs(res.repoRateAnomalyPp) > 0.5;
-
-                return (
-                  <tr key={res.dealId} className="hover:bg-surface-container-low transition-colors">
-                    <td className="py-3 px-4 font-bold text-primary font-mono">{res.dealId}</td>
-                    <td className="py-3 px-4 font-mono font-bold text-on-surface-variant">{res.isin}</td>
-                    <td className="py-3 px-4">{res.counterparty}</td>
-                    <td className="py-3 px-3 text-right font-black text-secondary">{res.repoRate.toFixed(2)}%</td>
-                    <td className="py-3 px-3 text-center border-r border-line font-bold">{res.termDays} дней</td>
-
-                    {/* leg sums */}
-                    <td className="py-3 px-3 bg-[#ecf2fa]/10">
-                      <div className="flex flex-col text-[10.5px] font-semibold leading-tight">
-                        <span>Всего: <strong className="text-on-surface font-sans">{res.sum1WithNkd.toLocaleString('ru-RU')} ₽</strong></span>
-                        <span className="text-[9.5px] text-on-surface-variant">НКД: {res.nkd1.toLocaleString()} ₽</span>
-                      </div>
-                    </td>
-                    <td className="py-3 px-3 bg-[#ecf2fa]/10">
-                      <div className="flex flex-col text-[10.5px] font-semibold leading-tight">
-                        <span>Всего: <strong className="text-on-surface font-sans">{res.sum2WithNkd.toLocaleString('ru-RU')} ₽</strong></span>
-                        <span className="text-[9.5px] text-on-surface-variant">НКД: {res.nkd2.toLocaleString()} ₽</span>
-                      </div>
-                    </td>
-                    <td className="py-3 px-4 text-center border-r border-line bg-[#ecf2fa]/10">
-                      <span className="inline-flex items-center gap-1 text-[10.5px] font-extrabold text-[#0a7d3f] bg-pos/10 px-2.5 py-0.5 rounded-full">
-                        <Check className="w-3.5 h-3.5" /> Пройден
-                      </span>
-                    </td>
-
-                    {/* actual haircut vs close price and NCC */}
-                    <td className="py-3 px-3 font-semibold text-right bg-pos/5 text-primary">{res.calculatedDiscount.toFixed(2)}%</td>
-                    <td className="py-3 px-3 select-none bg-pos/5">{res.closePrice.toFixed(2)} %</td>
-                    <td className="py-3 px-3 bg-pos/5">
-                      <span className={`inline-flex px-1.5 py-0.5 rounded text-[10px] font-extrabold ${
-                        res.discountDiscrepancyBps >= 0 ? 'bg-pos/15 text-pos' : 'bg-neg/15 text-neg'
-                      }`}>
-                        {res.discountDiscrepancyBps >= 0 ? `Запас +${res.discountDiscrepancyBps.toFixed(0)} бп` : `Дефицит ${(res.discountDiscrepancyBps).toFixed(0)} бп`}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 text-right bg-pos/5">
-                      <div className="flex flex-col items-end text-[10.5px] leading-tight font-bold">
-                        <span>Бенч: {res.rusfarBench}%</span>
-                        <span className={`text-[9.5px] font-black ${isOffMarket ? 'text-neg' : 'text-on-surface-variant'}`}>
-                          Откл: {res.repoRateAnomalyPp > 0 ? '+' : ''}{res.repoRateAnomalyPp} п.п.
-                        </span>
-                      </div>
-                    </td>
+          <div className="bg-white rounded-xl border border-line-soft shadow-sm overflow-hidden flex flex-col">
+            <div className="px-5 py-3 border-b border-line-soft bg-surface-container-lowest flex justify-between items-center font-black text-[11px] text-primary uppercase">
+              <span className="flex items-center gap-2"><ClipboardCheck className="w-4 h-4" /> Реестр сделок РЕПО</span>
+              <div className="flex items-center gap-4">
+                <span className="bg-surface-container px-2 py-0.5 rounded text-[10px] text-on-surface-variant tracking-tighter">Положение 511-П</span>
+                <button 
+                  onClick={handleExportCSV}
+                  className="p-1.5 bg-primary/5 text-primary border border-primary/10 rounded-lg hover:bg-primary hover:text-white transition-all cursor-pointer shadow-xs"
+                  title="Экспорт в Excel"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+            <div className="overflow-x-auto w-full">
+              <table className="w-full text-left border-collapse min-w-[1000px]">
+                <thead>
+                  <tr className="bg-surface-container-low text-[10px] font-black text-on-surface-variant border-b border-line-soft uppercase tracking-wider">
+                    <th className="py-2.5 px-4">Код</th>
+                    <th className="py-2.5 px-4">ISIN</th>
+                    <th className="py-2.5 px-3 text-right">Ставка</th>
+                    <th className="py-2.5 px-3 text-center">Срок</th>
+                    <th className="py-2.5 px-3 text-right">Нога 1 (₽)</th>
+                    <th className="py-2.5 px-3 text-right">Нога 2 (₽)</th>
+                    <th className="py-2.5 px-4 text-center">Контроль</th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                </thead>
+                <tbody className="divide-y divide-line-soft text-[12px] font-medium text-on-surface tabular-nums">
+                  {evaluatedRepoDeals.map((res, idx) => (
+                    <tr 
+                      key={idx} 
+                      onClick={() => onInspectDeal(res.dealId)}
+                      className="hover:bg-primary/5 transition-colors cursor-pointer"
+                    >
+                      <td className="py-3 px-4 font-bold text-primary font-mono">{res.dealId}</td>
+                      <td className="py-3 px-4 font-mono text-on-surface-variant font-semibold">{res.isin}</td>
+                      <td className="py-3 px-3 text-right font-black text-secondary">{res.repoRate.toFixed(2)}%</td>
+                      <td className="py-3 px-3 text-center font-bold">{res.termDays}д</td>
+                      <td className="py-3 px-3 text-right">{res.sum1WithNkd.toLocaleString('ru-RU')}</td>
+                      <td className="py-3 px-3 text-right">{res.sum2WithNkd.toLocaleString('ru-RU')}</td>
+                      <td className="py-3 px-4 text-center">
+                        <span className="bg-pos/15 text-pos text-[10px] font-black px-2.5 py-0.5 rounded-full uppercase tracking-tighter">Пройден</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* REPO Calculator and Verification of Leg calculations */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left Form Input */}
-        <div className="lg:col-span-5 bg-surface-light rounded-lg border border-line-soft shadow-sm p-5 flex flex-col gap-4">
-          <h3 className="font-sans text-sm font-bold text-primary border-b border-line-soft pb-2 flex items-center gap-1.5 font-sans">
-            <Calculator className="w-4 h-4 text-primary" /> Параметры Обеспечения & Сделки РЕПО
-          </h3>
-
-          <div className="grid grid-cols-2 gap-4 text-xs font-semibold text-on-surface">
-            <div className="flex flex-col gap-1">
-              <span className="text-on-surface-variant">ISIN Облигации / Акции</span>
-              <input 
-                type="text"
-                value={selectedIsin}
-                onChange={(e) => setSelectedIsin(e.target.value)}
-                className="border border-line rounded h-8 px-2.5 bg-surface-bright text-xs focus:outline-none focus:border-primary font-mono uppercase font-bold text-primary"
-              />
+      {appMode === 'SEMI_AUTO' && (
+        <div className="flex flex-col gap-5 animate-fadeIn">
+          <div onClick={() => dealsFileRef.current?.click()} className="border-2 border-dashed border-line hover:border-primary bg-white rounded-xl p-8 flex flex-col items-center justify-center text-center cursor-pointer transition-all group">
+            <div className="p-4 bg-primary/5 rounded-full mb-3 group-hover:scale-110 transition-transform">
+              <Upload className="w-10 h-10 text-primary" />
             </div>
+            <h3 className="font-sans text-sm font-black text-on-surface uppercase tracking-tight">Загрузить реестр РЕПО ведомости</h3>
+            <p className="font-sans text-[11px] text-on-surface-variant mt-1 leading-none">Форматы: XLSX, CSV, JSON</p>
+            <input type="file" ref={dealsFileRef} onChange={() => setFileUploaded(true)} className="hidden" />
+            {fileUploaded && <span className="mt-3 bg-pos/10 text-pos text-[11px] font-black px-3 py-1 rounded-full shadow-sm">Данные загружены</span>}
+          </div>
 
-            <div className="flex flex-col gap-1">
-              <span className="text-on-surface-variant">MOEX цена закрытия %</span>
-              <input 
-                type="number"
-                step="0.01"
-                value={inputClosePrice}
-                onChange={(e) => setInputClosePrice(parseFloat(e.target.value) || 0)}
-                className="border border-line rounded h-8 px-2.5 bg-surface-bright text-xs focus:outline-none focus:border-primary font-mono text-primary font-bold"
-              />
+          <div className="bg-white rounded-xl border border-line-soft p-5">
+             <h3 className="font-sans text-[11px] font-black text-on-surface uppercase mb-4 flex items-center gap-2"><Edit2 className="w-4 h-4 text-primary" /> Ручная сверка параметров</h3>
+             <div className="overflow-x-auto">
+               <table className="w-full text-left font-sans text-xs font-semibold border-collapse">
+                 <thead className="bg-surface-container-low text-[10px] uppercase text-on-surface-variant border-b border-line font-black">
+                   <tr>
+                     <th className="py-2.5 px-4">Deal ID</th>
+                     <th className="py-2.5 px-3 text-right">Ставка</th>
+                     <th className="py-2.5 px-3 text-right">Срок (дн)</th>
+                     <th className="py-2.5 px-4 text-right">Дисконт %</th>
+                   </tr>
+                 </thead>
+                 <tbody className="divide-y divide-line-soft font-medium text-on-surface">
+                   {evaluatedRepoDeals.map((res, idx) => (
+                     <tr key={idx} className="hover:bg-yellow-50/30 transition-colors">
+                       <td className="py-3 px-4 font-mono font-black text-primary">{res.dealId}</td>
+                       <td className="py-3 px-3 text-right cursor-pointer hover:text-primary font-mono" onClick={() => setEditingCell({ dealId: res.dealId, field: 'rate', value: String(activeDeals[idx].rate) })}>
+                         {editingCell?.dealId === res.dealId && editingCell?.field === 'rate' ? (
+                           <input autoFocus onBlur={(e) => handleCellEditSubmit(res.dealId, 'rate', e.target.value)} className="border border-primary rounded p-1 w-20 text-right outline-none ring-1 ring-primary/20" />
+                         ) : <span className="flex items-center justify-end gap-1">{activeDeals[idx].rate?.toFixed(2)}% <Edit2 className="w-3 h-3 opacity-30" /></span>}
+                       </td>
+                       <td className="py-3 px-3 text-right font-bold">{res.termDays}</td>
+                       <td className="py-3 px-4 text-right font-black text-primary font-mono">{res.calculatedDiscount}%</td>
+                     </tr>
+                   ))}
+                 </tbody>
+               </table>
+             </div>
+          </div>
+
+          <div className="bg-white rounded-xl border border-line-soft shadow-sm p-5">
+            <h4 className="font-sans text-[11px] font-black text-on-surface uppercase tracking-wider flex items-center gap-2 mb-3"><History className="w-4 h-4 text-primary" /> Журнал аудита правок РЕПО</h4>
+            <div className="space-y-2 max-h-40 overflow-y-auto">
+              {auditLog.map(entry => (
+                <div key={entry.id} className="p-2.5 bg-surface-container-low border border-line-soft rounded-lg flex justify-between text-[11px] font-mono leading-tight">
+                  <span className="text-on-surface-variant font-semibold"><span className="text-secondary">[{entry.timestamp}]</span> {entry.field}: {entry.oldValue} → <strong className="text-primary">{entry.newValue}</strong></span>
+                  <span className="font-black text-[10px] text-primary bg-white px-2 py-0.5 rounded shadow-sm uppercase">{entry.user}</span>
+                </div>
+              ))}
+              {auditLog.length === 0 && <p className="text-center text-on-surface-variant italic py-4 text-xs font-semibold">История изменений пуста.</p>}
             </div>
+          </div>
+        </div>
+      )}
 
-            <div className="flex flex-col gap-1">
-              <span className="text-on-surface-variant">Цена Лег 1 (% номинала)</span>
-              <input 
-                type="number"
-                step="0.01"
-                value={inputLeg1Price}
-                onChange={(e) => setInputLeg1Price(parseFloat(e.target.value) || 0)}
-                className="border border-line rounded h-8 px-2.5 bg-surface-bright text-xs focus:outline-none focus:border-primary font-mono font-bold text-primary"
-              />
-            </div>
-
-            <div className="flex flex-col gap-1">
-              <span className="text-on-surface-variant">Процентная ставка РЕПО %</span>
-              <input 
-                type="number"
-                step="0.01"
-                value={inputRepoRate}
-                onChange={(e) => setInputRepoRate(parseFloat(e.target.value) || 0)}
-                className="border border-line rounded h-8 px-2.5 bg-surface-bright text-xs focus:outline-none focus:border-primary font-mono text-primary font-bold"
-              />
-            </div>
-
-            <div className="flex flex-col gap-1 col-span-2">
-              <span className="text-on-surface-variant">Дней удержания сделки (T)</span>
-              <div className="grid grid-cols-4 gap-1">
-                {[1, 7, 14, 30].map(days => (
-                  <button
-                    key={days}
-                    onClick={() => setInputTermDays(days)}
-                    className={`py-1.5 rounded font-sans text-xs font-extrabold cursor-pointer border transition-all ${
-                      inputTermDays === days 
-                        ? 'bg-primary text-on-primary border-primary' 
-                        : 'bg-surface-bright text-on-surface-variant border-line hover:border-on-surface-variant'
-                    }`}
-                  >
-                    {days === 1 ? '1 день (O/N)' : `${days} дней`}
-                  </button>
-                ))}
+      {appMode === 'CALCULATOR' && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 animate-fadeIn">
+          <div className="lg:col-span-5 bg-white rounded-xl border border-line-soft shadow-sm p-5 flex flex-col gap-5">
+            <h3 className="font-sans text-[11px] font-black text-primary border-b border-line-soft pb-2.5 uppercase tracking-widest flex items-center gap-2 leading-none"><Calculator className="w-4 h-4" /> Калькулятор обеспечения</h3>
+            <div className="space-y-4">
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[10px] font-black text-on-surface-variant uppercase tracking-wider">ISIN инструмента</span>
+                <input type="text" value={selectedIsin} onChange={(e) => setSelectedIsin(e.target.value)} className="border border-line rounded-lg h-10 px-3 text-[13px] font-black text-primary font-mono outline-none focus:border-primary-light uppercase shadow-inner" />
               </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex flex-col gap-1.5">
+                   <span className="text-[10px] font-black text-on-surface-variant uppercase tracking-wider">Цена закрытия %</span>
+                   <input type="number" value={inputClosePrice} onChange={(e) => setInputClosePrice(Number(e.target.value))} className="border border-line rounded-lg h-10 px-3 text-[13px] font-bold font-mono outline-none focus:border-primary-light bg-surface-bright shadow-inner" />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                   <span className="text-[10px] font-black text-on-surface-variant uppercase tracking-wider">Цена Нога 1 %</span>
+                   <input type="number" value={inputLeg1Price} onChange={(e) => setInputLeg1Price(Number(e.target.value))} className="border border-line rounded-lg h-10 px-3 text-[13px] font-bold font-mono outline-none focus:border-primary-light bg-surface-bright shadow-inner" />
+                </div>
+              </div>
+              <button onClick={runRepoCalculator} className="w-full bg-primary hover:bg-primary-light text-on-primary font-black py-3 rounded-xl text-xs flex items-center justify-center gap-2 shadow-md transition-all uppercase tracking-widest mt-2">
+                <ShieldCheck className="w-4 h-4" /> Рассчитать РЕПО-позицию
+              </button>
             </div>
           </div>
 
-          <button 
-            onClick={runRepoCalculator}
-            className="w-full bg-primary hover:bg-primary-container text-on-primary font-bold py-2.5 rounded-lg text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-md mt-2"
-          >
-            <ShieldCheck className="w-4 h-4" /> Прокалькулировать вторую ногу & Дисконт
-          </button>
-        </div>
-
-        {/* Right Outputs Panel representing Step-by-Step interactive Calculations outputs */}
-        <div className="lg:col-span-7 bg-surface-light rounded-lg border border-line-soft shadow-sm p-4 flex flex-col justify-between">
-          <div>
-            <h3 className="font-sans text-sm font-bold text-on-surface border-b border-line-soft pb-2 flex items-center gap-1.5">
-              <TrendingUp className="w-4 h-4 text-secondary" /> Математический отчет и Аудит обеспечения
-            </h3>
-
+          <div className="lg:col-span-7 bg-white rounded-xl border border-line-soft shadow-sm p-5 flex flex-col">
+            <h3 className="font-sans text-[11px] font-black text-on-surface border-b border-line-soft pb-2.5 uppercase tracking-widest flex items-center gap-2 leading-none"><Eye className="w-4 h-4 text-secondary" /> Результат аудита</h3>
             {calcResult ? (
-              <div className="flex flex-col gap-4 mt-4 font-sans text-xs font-semibold leading-relaxed">
-                {/* Control Checklist boxes */}
+              <div className="mt-6 flex-1 flex flex-col justify-between">
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-surface rounded-lg border border-line-soft p-3 flex flex-col justify-between">
-                    <div>
-                      <span className="text-[10px] text-on-surface-variant uppercase font-bold tracking-wider">Лег 1 (Сумма с НКД)</span>
-                      <p className="font-mono text-[13px] font-black text-primary mt-1">{calcResult.sum1WithNkd.toLocaleString('ru-RU')} ₽</p>
-                    </div>
-                    <span className="text-[9px] text-[#0a7d3f] font-extrabold flex items-center gap-1 mt-2">
-                      <Check className="w-3.5 h-3.5" /> Расчет верифицирован котировщиком
-                    </span>
+                  <div className="p-4 bg-surface-container rounded-xl border border-line-soft shadow-inner">
+                    <span className="text-[9px] font-black text-on-surface-variant uppercase tracking-widest">Сумма Возврата (Ч.2)</span>
+                    <p className="text-2xl font-black text-primary font-mono mt-1 leading-none">{calcResult.sum2WithNkd.toLocaleString('ru-RU')} ₽</p>
                   </div>
-
-                  <div className="bg-surface rounded-lg border border-line-soft p-3 flex flex-col justify-between">
-                    <div>
-                      <span className="text-[10px] text-on-surface-variant uppercase font-bold tracking-wider">Лег 2 (Возврат с РЕПО %):</span>
-                      <p className="font-mono text-[13px] font-black text-secondary mt-1">{calcResult.sum2WithNkd.toLocaleString('ru-RU')} ₽</p>
-                    </div>
-                    <span className="text-[9px] text-secondary font-mono leading-none flex items-center gap-1 mt-2">
-                      Коэффициент: {(1 + (calcResult.repoRatePp / 100) * inputTermDays / 360).toFixed(6)}
-                    </span>
+                  <div className="p-4 bg-surface-container rounded-xl border border-line-soft shadow-inner">
+                    <span className="text-[9px] font-black text-on-surface-variant uppercase tracking-widest">Дисконт по сделке</span>
+                    <p className="text-2xl font-black font-mono mt-1 leading-none text-secondary tracking-tighter">{calcResult.actualDiscount.toFixed(2)}%</p>
                   </div>
                 </div>
-
-                {/* Mathematical discrepancies */}
-                <div className="bg-[#ecf2fa]/20 border border-line-soft p-4 rounded-lg flex justify-between items-center text-[11px] font-mono leading-relaxed text-on-surface-variant">
-                  <div className="flex flex-col gap-1">
-                    <span>Расчетный дисконт по сделке:</span>
-                    <strong className="text-primary text-[13px] font-black font-sans">{calcResult.actualDiscount.toFixed(2)}%</strong>
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <span>Норматив обеспечения НКЦ:</span>
-                    <strong className="text-secondary text-[13px] font-bold font-sans">{calcResult.nkcRequiredHaircut.toFixed(2)}%</strong>
-                  </div>
-                  <div className="flex flex-col gap-1 items-end">
-                    <span>Запас прочности (Margin Buffer):</span>
-                    <span className={`px-2 py-0.5 rounded font-bold font-sans ${calcResult.deviation >= 0 ? 'bg-pos/15 text-pos' : 'bg-neg/15 text-neg'}`}>
-                      {calcResult.deviation >= 0 ? `Запас +${calcResult.deviation.toFixed(2)}%` : `Дефицит ${(calcResult.deviation).toFixed(2)}%`}
-                    </span>
-                  </div>
+                <div className="bg-primary/5 rounded-xl border border-primary/10 p-5 font-mono text-[12px] space-y-3 mt-auto shadow-inner">
+                   <div className="flex justify-between items-center"><span className="text-on-surface-variant">RUSFAR Бенчмарк</span><strong className="text-primary">{calcResult.rusfarBench}%</strong></div>
+                   <div className="flex justify-between items-center"><span className="text-on-surface-variant font-semibold">Отклонение от рынка</span><strong className={Math.abs(calcResult.repoRatePp - calcResult.rusfarBench) > 0.5 ? "text-neg" : "text-pos"}>{(calcResult.repoRatePp - calcResult.rusfarBench).toFixed(2)} п.п.</strong></div>
                 </div>
 
-                {/* rusfar comparison benchmark */}
-                <div className="p-3 bg-pos/10 rounded-lg flex justify-between items-center text-xs">
-                  <div className="flex items-center gap-2 font-bold text-pos">
-                    <TrendingUp className="w-4 h-4" />
-                    <span>Сравнение со ставкой краткосрочного фондирования RUSFAR ({inputTermDays}д):</span>
-                  </div>
-                  <span className="font-mono font-bold text-primary bg-surface-light border border-line px-2 py-0.5 rounded">
-                    Ставка РЕПО {calcResult.repoRatePp}% vs RUSFAR {calcResult.rusfarBench}%
-                  </span>
+                <div className="mt-4 p-3 bg-surface-container-low rounded-lg text-[9px] font-bold text-on-surface-variant italic leading-tight text-center">
+                  * Расчет обеспеченных сделок РЕПО соответствует стандартам ССР НКЦ
                 </div>
               </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center p-12 text-center text-on-surface-variant italic font-semibold gap-2 mt-4">
-                <Calculator className="w-10 h-10 opacity-30 animate-pulse" />
-                <span>Задайте условия привлечения/размещения РЕПО-кредита слева для выполнения математического аудита.</span>
-              </div>
-            )}
-          </div>
-          
-          <div className="text-[10px] text-on-surface-variant uppercase font-bold text-right pt-3 bg-surface-container-lowest/20 border-t border-line-soft mt-3 italic leading-tight select-none">
-            УЧЕТ РЕЗЕРВИРОВАНИЯ ЦЕННЫХ БУМАГ СООТВЕТСТВУЕТ СТАНДАРТУ MOEX
+            ) : <div className="flex-1 flex flex-col items-center justify-center text-on-surface-variant italic text-xs gap-3 opacity-40 py-12"><Calculator className="w-14 h-14" /><span className="font-black uppercase tracking-widest">Ожидание ввода данных</span></div>}
           </div>
         </div>
-      </div>
+      )}
     </motion.div>
   );
 }
+
+// Re-importing icon locally
+import { Percent } from 'lucide-react';
